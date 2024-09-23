@@ -105,7 +105,7 @@ static DAProgramOption options[] = {
 void checkForNewMail(int dummy);
 void updatePixmap(void);
 void parseMailFile( struct stat *fileStat );
-void parseMailDir(void);
+void parseMailDir( const char *mailDirNew, const char *mailDirCur);
 char *getHexColorString( char *colorName );
 void putnumber (int number, Pixmap pixmap, Pixmap numbers,
   int destx, int desty);
@@ -352,7 +352,7 @@ void checkfetchmail (void) {
 }
   /*
    *
-   *  checkmbox
+   *  checkmbox (also checks maildir)
    *
    */
 
@@ -363,26 +363,29 @@ void checkmbox (void) {
 
   size_t dirsize;
 
-  dirsize = strlen( mailPath) + 6; /* big enough to add the /cur, /new and two nulls */
+  dirsize = strlen( mailPath) + 6; /* big enough to add the /cur or /new */
   mailDirNew = malloc( dirsize);
   mailDirCur = malloc( dirsize);
-
-  sprintf(mailDirNew, "%s%s", mailPath, "new");
-  sprintf(mailDirCur, "%s%s", mailPath, "cur");
 
   if (stat(mailPath, &fileStat) == -1 || fileStat.st_size == 0) {
     numMessages = 0;
     numUnread = 0;
   }
-  else if (S_ISDIR(fileStat.st_mode)) { /* new stuff.  do something about lastModify/lastSize ?*/
-    /* TODO need to stat both maildir/cur and maildir/new and check their mtimes for a change */
-    /*    printf( "New: %s, Cur: %s \n", mailDirNew, mailDirCur); */
+  else if (S_ISDIR(fileStat.st_mode)) { /* it's a directory, so treat it as a MailDir.*/
+
+    /* if it's a mailDir, check whether it ends with "/" or needs that added */
+    if (mailPath[strlen(mailPath)-1] == '/') {
+      sprintf(mailDirNew, "%s%s", mailPath, "new");
+      sprintf(mailDirCur, "%s%s", mailPath, "cur");
+    } else {
+      sprintf(mailDirNew, "%s/%s", mailPath, "new");
+      sprintf(mailDirCur, "%s/%s", mailPath, "cur");
+    }
+    
     if (stat( mailDirNew, &fileStatNew) != -1 && stat( mailDirCur, &fileStatCur) != -1) {
-      /* printf( "New time: %ld cur time: %ld\n", fileStatNew.st_mtime, fileStatCur.st_mtime); */
       if (lastModifySecondsNew != fileStatNew.st_mtime ||
 	  lastModifySecondsCur != fileStatCur.st_mtime) {
-       	/* printf( "update mail time %ld,%ld\n", fileStatNew.st_mtime, fileStatCur.st_mtime); */
-	parseMailDir( );
+	parseMailDir( mailDirNew, mailDirCur);
 	lastModifySecondsNew = fileStatNew.st_mtime;
 	lastModifySecondsCur = fileStatCur.st_mtime;
       }
@@ -396,6 +399,8 @@ void checkmbox (void) {
     lastModifySeconds = fileStat.st_mtime;
     lastSize = fileStat.st_size;
   }
+  free( mailDirNew);
+  free( mailDirCur);
 }
 
   /*
@@ -580,26 +585,19 @@ void launch (const char *command) {
  *    numRead       --  messages that have been read
  *    numUnread     --  message not yet read      (displayed on the left)
  *
- * Assumes maildir is well behaved.  Just counts the number of files in /new and /cur.
+ * Assumes maildir is well behaved.  It counts all files in /new as
+ * unread. In /cur it counts files with "S" in the name as read, all
+ * others unread.
  */
 
-void parseMailDir () {
-
-  /* count files in mailPath + "/new" as unread, mail + "/cur" as read */
+void parseMailDir ( const char *mailDirNew, const char *mailDirCur) {
 
  DIR * dirp;
  struct dirent * entry;
 
- char *stringa1;
- size_t n;
+ /* Anything in the "new" directory is assumed to be unread */
 
- n = strlen( mailPath) + 5;
- stringa1 = (char*) malloc(n*sizeof(char));
- 
- strcpy( stringa1, mailPath);
- strncat( stringa1, "/new", 5);	/* add the /new to look in that subdirectory */
-
- dirp = opendir(stringa1); /* There should be error handling after this */
+ dirp = opendir(mailDirNew); /* There should be error handling after this */
  numUnread = 0;
  while ((entry = readdir(dirp)) != NULL) {
    if (entry->d_type == DT_REG) { /* If the entry is a regular file, works for ext2/3/4 and btrfs */
@@ -608,10 +606,9 @@ void parseMailDir () {
  }
  closedir(dirp);
 
- strcpy( stringa1, mailPath);
- strncat( stringa1, "/cur", 5);	/* add the /new to look in that subdirectory */
-
- dirp = opendir(stringa1); /* add the /cur. There should be error handling after this */
+ /* In the "cur" directory if the filename constains an "S" it has been read, otherwise it's unread */
+ 
+ dirp = opendir(mailDirCur);
  numRead = 0;
  while ((entry = readdir(dirp)) != NULL) {
    if (entry->d_type == DT_REG) { /* If the entry is a regular file, works for ext2/3/4 and btrfs */
@@ -625,6 +622,5 @@ void parseMailDir () {
  }
  closedir(dirp);
  numMessages = numRead + numUnread;
- free( stringa1);		/* tidy up */
 }
 
