@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <dirent.h>
 #include <utime.h>
 #include <sys/time.h>
 #include <sys/stat.h>
@@ -54,6 +55,8 @@ int usefetchmail = 0;
 int flip = 1;
 int checkInterval = CHECKINTERVAL;
 time_t lastModifySeconds = 0;
+time_t lastModifySecondsNew = 0;
+time_t lastModifySecondsCur = 0;
 off_t lastSize = 0;
 
 Pixmap mainPixmap;
@@ -102,6 +105,7 @@ static DAProgramOption options[] = {
 void checkForNewMail(int dummy);
 void updatePixmap(void);
 void parseMailFile( struct stat *fileStat );
+void parseMailDir(void);
 char *getHexColorString( char *colorName );
 void putnumber (int number, Pixmap pixmap, Pixmap numbers,
   int destx, int desty);
@@ -116,7 +120,7 @@ void launch (const char *command);
 int main(int argc, char **argv) {
   Pixmap mainPixmap_mask;
 
-  unsigned width, height;
+  unsigned short width, height;
 
   DACallbacks callbacks = { NULL, &buttonpress, &buttonrelease,
                             NULL, NULL, NULL, NULL };
@@ -353,12 +357,38 @@ void checkfetchmail (void) {
    */
 
 void checkmbox (void) {
-  struct stat fileStat;
+  struct stat fileStat, fileStatNew, fileStatCur;
+
+  char *mailDirNew, *mailDirCur;
+
+  size_t dirsize;
+
+  dirsize = strlen( mailPath) + 6; /* big enough to add the /cur, /new and two nulls */
+  mailDirNew = malloc( dirsize);
+  mailDirCur = malloc( dirsize);
+
+  sprintf(mailDirNew, "%s%s", mailPath, "new");
+  sprintf(mailDirCur, "%s%s", mailPath, "cur");
 
   if (stat(mailPath, &fileStat) == -1 || fileStat.st_size == 0) {
     numMessages = 0;
     numUnread = 0;
-  } else if (lastModifySeconds != fileStat.st_mtime ||
+  }
+  else if (S_ISDIR(fileStat.st_mode)) { /* new stuff.  do something about lastModify/lastSize ?*/
+    /* TODO need to stat both maildir/cur and maildir/new and check their mtimes for a change */
+    /*    printf( "New: %s, Cur: %s \n", mailDirNew, mailDirCur); */
+    if (stat( mailDirNew, &fileStatNew) != -1 && stat( mailDirCur, &fileStatCur) != -1) {
+      /* printf( "New time: %ld cur time: %ld\n", fileStatNew.st_mtime, fileStatCur.st_mtime); */
+      if (lastModifySecondsNew != fileStatNew.st_mtime ||
+	  lastModifySecondsCur != fileStatCur.st_mtime) {
+       	/* printf( "update mail time %ld,%ld\n", fileStatNew.st_mtime, fileStatCur.st_mtime); */
+	parseMailDir( );
+	lastModifySecondsNew = fileStatNew.st_mtime;
+	lastModifySecondsCur = fileStatCur.st_mtime;
+      }
+    }
+  }
+  else if (lastModifySeconds != fileStat.st_mtime ||
              lastSize != fileStat.st_size) {
 
     parseMailFile(&fileStat);
@@ -541,5 +571,60 @@ void launch (const char *command) {
         system(command);
         exit(0);
     }
+}
+
+/*
+ * parseMailDir -- reads the maildir and sets the global variables:
+ *
+ *    numMessages   --  total number of messages  (displayed on the right)
+ *    numRead       --  messages that have been read
+ *    numUnread     --  message not yet read      (displayed on the left)
+ *
+ * Assumes maildir is well behaved.  Just counts the number of files in /new and /cur.
+ */
+
+void parseMailDir () {
+
+  /* count files in mailPath + "/new" as unread, mail + "/cur" as read */
+
+ DIR * dirp;
+ struct dirent * entry;
+
+ char *stringa1;
+ size_t n;
+
+ n = strlen( mailPath) + 5;
+ stringa1 = (char*) malloc(n*sizeof(char));
+ 
+ strcpy( stringa1, mailPath);
+ strncat( stringa1, "/new", 5);	/* add the /new to look in that subdirectory */
+
+ dirp = opendir(stringa1); /* There should be error handling after this */
+ numUnread = 0;
+ while ((entry = readdir(dirp)) != NULL) {
+   if (entry->d_type == DT_REG) { /* If the entry is a regular file, works for ext2/3/4 and btrfs */
+     numUnread++;
+   }
+ }
+ closedir(dirp);
+
+ strcpy( stringa1, mailPath);
+ strncat( stringa1, "/cur", 5);	/* add the /new to look in that subdirectory */
+
+ dirp = opendir(stringa1); /* add the /cur. There should be error handling after this */
+ numRead = 0;
+ while ((entry = readdir(dirp)) != NULL) {
+   if (entry->d_type == DT_REG) { /* If the entry is a regular file, works for ext2/3/4 and btrfs */
+     /* need an if.  If the filename contains an "S" it's read. */
+     if ( strstr( entry->d_name, "S") != NULL) {
+       numRead++;
+     } else {
+       numUnread++;
+     }
+   }
+ }
+ closedir(dirp);
+ numMessages = numRead + numUnread;
+ free( stringa1);		/* tidy up */
 }
 
